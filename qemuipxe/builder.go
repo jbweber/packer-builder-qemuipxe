@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/mitchellh/multistep"
@@ -94,9 +93,6 @@ type Config struct {
 	HTTPDir         string     `mapstructure:"http_directory"`
 	HTTPPortMin     uint       `mapstructure:"http_port_min"`
 	HTTPPortMax     uint       `mapstructure:"http_port_max"`
-	ISOChecksum     string     `mapstructure:"iso_checksum"`
-	ISOChecksumType string     `mapstructure:"iso_checksum_type"`
-	ISOUrls         []string   `mapstructure:"iso_urls"`
 	MachineType     string     `mapstructure:"machine_type"`
 	NetDevice       string     `mapstructure:"net_device"`
 	OutputDir       string     `mapstructure:"output_directory"`
@@ -118,7 +114,6 @@ type Config struct {
 	RunOnce bool `mapstructure:"run_once"`
 
 	RawBootWait        string `mapstructure:"boot_wait"`
-	RawSingleISOUrl    string `mapstructure:"iso_url"`
 	RawShutdownTimeout string `mapstructure:"shutdown_timeout"`
 
 	bootWait        time.Duration ``
@@ -271,45 +266,6 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, error) {
 			errs, errors.New("http_port_min must be less than http_port_max"))
 	}
 
-	if b.config.ISOChecksumType == "" {
-		errs = packer.MultiErrorAppend(
-			errs, errors.New("The iso_checksum_type must be specified."))
-	} else {
-		b.config.ISOChecksumType = strings.ToLower(b.config.ISOChecksumType)
-		if b.config.ISOChecksumType != "none" {
-			if b.config.ISOChecksum == "" {
-				errs = packer.MultiErrorAppend(
-					errs, errors.New("Due to large file sizes, an iso_checksum is required"))
-			} else {
-				b.config.ISOChecksum = strings.ToLower(b.config.ISOChecksum)
-			}
-
-			if h := common.HashForType(b.config.ISOChecksumType); h == nil {
-				errs = packer.MultiErrorAppend(
-					errs,
-					fmt.Errorf("Unsupported checksum type: %s", b.config.ISOChecksumType))
-			}
-		}
-	}
-
-	if b.config.RawSingleISOUrl == "" && len(b.config.ISOUrls) == 0 {
-		errs = packer.MultiErrorAppend(
-			errs, errors.New("One of iso_url or iso_urls must be specified."))
-	} else if b.config.RawSingleISOUrl != "" && len(b.config.ISOUrls) > 0 {
-		errs = packer.MultiErrorAppend(
-			errs, errors.New("Only one of iso_url or iso_urls may be specified."))
-	} else if b.config.RawSingleISOUrl != "" {
-		b.config.ISOUrls = []string{b.config.RawSingleISOUrl}
-	}
-
-	for i, url := range b.config.ISOUrls {
-		b.config.ISOUrls[i], err = common.DownloadableURL(url)
-		if err != nil {
-			errs = packer.MultiErrorAppend(
-				errs, fmt.Errorf("Failed to parse iso_url %d: %s", i+1, err))
-		}
-	}
-
 	if !b.config.PackerForce {
 		if _, err := os.Stat(b.config.OutputDir); err == nil {
 			errs = packer.MultiErrorAppend(
@@ -348,12 +304,6 @@ func (b *Builder) Prepare(raws ...interface{}) ([]string, error) {
 		b.config.QemuArgs = make([][]string, 0)
 	}
 
-	if b.config.ISOChecksumType == "none" {
-		warnings = append(warnings,
-			"A checksum type of 'none' was specified. Since ISO files are so big,\n"+
-				"a checksum is highly recommended.")
-	}
-
 	if errs != nil && len(errs.Errors) > 0 {
 		return warnings, errs
 	}
@@ -369,28 +319,15 @@ func (b *Builder) Run(ui packer.Ui, hook packer.Hook, cache packer.Cache) (packe
 	}
 
 	steprun := &stepRun{}
-	if !b.config.DiskImage {
-		steprun.BootDrive = "once=d"
-		steprun.Message = "Starting VM, booting from CD-ROM"
-	} else {
-		steprun.BootDrive = "c"
-		steprun.Message = "Starting VM, booting disk image"
-	}
+	steprun.BootDrive = "once=n"
+	steprun.Message = "Starting VM, booting from Network"
 
 	steps := []multistep.Step{
-		&common.StepDownload{
-			Checksum:     b.config.ISOChecksum,
-			ChecksumType: b.config.ISOChecksumType,
-			Description:  "ISO",
-			ResultKey:    "iso_path",
-			Url:          b.config.ISOUrls,
-		},
 		new(stepPrepareOutputDir),
 		&common.StepCreateFloppy{
 			Files: b.config.FloppyFiles,
 		},
 		new(stepCreateDisk),
-		new(stepCopyDisk),
 		new(stepResizeDisk),
 		new(stepHTTPServer),
 		new(stepForwardSSH),
